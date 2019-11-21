@@ -9,8 +9,27 @@ library(tidyverse)
 con1 <- dbConnect(odbc::odbc(), dsn = "database1")
 con2 <- dbConnect(odbc::odbc(), dsn = "database2")
 
-##List of tablenames its description in database1
-database1 <- read_csv('database1.csv')
+##List of tablenames in database1 and its in new tablename when it's imported
+database1 <-  tibble(
+  TableName = c('culocmhg',
+  'culshmhg',
+  'cumktmhg',
+  'cuoptmhg',
+  'cupaxmhg',
+  'cuphsmhg',
+  'cuphymhg',
+  'cuposmhg'
+),
+NewTableName = c('Products',
+'Customers',
+  'OutboundSales',
+  'InboundSales',
+  'Inventory',
+  'Contracts',
+  'Discounts',
+  'Locations'
+)
+)
 
 tab <- database1 %>% select(TableName)
 
@@ -37,6 +56,6 @@ write_csv(D, 'database1number.csv')
 E <- D %>% filter(NumberofRecords!=0) %>% drop_na()
 
 #import statement
-tryCatch({map(map2_chr(H$Description, H$TableName, ~paste0("SELECT * INTO database2.",.x," FROM OPENQUERY (SUMMIT, 'SELECT * FROM dbo.",.y,"')")), 
-     ~dbSendQuery(con,.))}, error = function(e) print(e)
+tryCatch({map(map2_chr(E$NewTableName, E$TableName, ~paste0("SELECT * INTO database2.",.x," FROM OPENQUERY (database1, 'SELECT * FROM dbo.",.y,"')")), 
+     ~dbSendQuery(con2,.))}, error = function(e) print(e)
      )
