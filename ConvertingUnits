@@ -1,0 +1,46 @@
+##converting units of multiple columns in table
+library(tidyverse)
+library(dplyr)
+library(purrr)
+
+
+financials <-  tibble(
+  unit = c('dollars',
+           'dollars',
+           'dollars',
+           'dollars',
+           'dollars',
+           'dollars',
+           'dollars',
+           'dollars'
+  ),
+  SyrupSales = c(1.5,
+                1.75,
+                1.8,
+                1.9,
+                2.1,
+                3.2,
+                4.8,
+                9.2
+  ),
+  WaffleSales = c(2.2,
+                 3.1,
+                 4.2,
+                 8.8,
+                 3.5,
+                 4.8,
+                 5.1,
+                 1.6
+                 )
+)
+
+numbers = financials[2:3]
+nonnumbers = financials[1] 
+df <- names(numbers) 
+
+# loop through columns and multiply them by 1000
+numbersdol <- map(df, ~numbers[[.x]]*1000) %>% 
+  set_names(df) %>%
+  as_tibble() 
+
+end <-  bind_cols(nonnumbers, numbersdol)
