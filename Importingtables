@@ -2,7 +2,7 @@
 ##Write the number of records to a csv
 
 library(odbc)
-library(readr)
+library(dplyr)
 library(purrr)
 library(tidyverse)
 
@@ -48,7 +48,7 @@ C <- cbind(B[1], NumberofRecords = na.omit(unlist(B[-1])))
 
 D <- inner_join(database1, C, by = "TableName")
 
-##writes down the number of records
+##writes down the number of records 
 write_csv(D, 'database1number.csv')
 
 
