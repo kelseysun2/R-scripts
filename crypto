@@ -51,6 +51,7 @@ m <- m_df$m
 
 crypto_prophet <- future_df %>% mutate(forecast = map2(m, future, predict))
 
+
 crypto_forecast <- crypto_prophet %>% unnest(forecast) 
 
 
