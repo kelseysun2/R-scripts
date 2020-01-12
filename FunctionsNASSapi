@@ -1,0 +1,76 @@
+##Functions script for the NASS quickstats queries
+### NASS quickstats API Query examples
+# https://quickstats.nass.usda.gov/api
+# https://quickstats.nass.usda.gov/src/glossary.pdf
+
+##Uses paste() to concatenate the URL from the quickstats website
+nass_data <- function(data_year,
+                      category,
+                      data_items,
+                      APIKey
+) {
+  baseurl <- 'http://quickstats.nass.usda.gov/api/api_GET/?'
+  p.api <- paste0('key=', APIKey)
+  commodity <- c("CORN", "SOYBEANS", "WHEAT", "COTTON", "SORGHUM")
+  p.commodity <- paste0("&commodity_desc=", commodity, 
+                        collapse = '') 
+  
+#County is the geo_level for all the scripts except Crop Condition
+  if (category == "CONDITION") {
+    geo_level <- "STATE" 
+  } else {
+    geo_level <- "COUNTY" 
+  }
+  
+  p.year <- paste0('&year=', data_year)
+  p.category <- paste0('&statisticcat_desc=', category)
+  p.geo_level <- paste0("&agg_level_desc=", geo_level)
+  
+  
+  p.data_item <- paste0("&short_desc=", data_items, 
+                        collapse = '') 
+  p.format <- paste0('&format=JSON')
+  call <- paste0(baseurl, p.api, p.commodity, p.year, p.category, p.geo_level, p.format, p.data_item)
+  response <- httr::GET(call)
+  
+  #retrieves the contents of the request into a text format
+  resContent <- (content(response, as = 'text', encoding = 'UTF-8'))
+  harv <- fromJSON(resContent)
+  harv1 <- as_tibble(harv$data)
+  
+  #Column for another name for commodity to match local lingo
+  harv1$alt_AcreType <- NA
+  harv1$alt_AcreType[harv1$prodn_practice_desc == "ALL PRODUCTION PRACTICES"] <- "TOTAL"
+  harv1$alt_AcreType[harv1$prodn_practice_desc == "NON-IRRIGATED"] <- "DRY"
+  
+  harv1$alt_Commodity <- NA
+  harv1 <- within(harv1, alt_Commodity[commodity_desc == 'WHEAT' & class_desc == 'WINTER'] <- 'WINTER WHEAT')
+  harv1 <- within(harv1, alt_Commodity[commodity_desc == 'WHEAT' & class_desc == 'SPRING, (EXCL DURUM)'] <- 'SPRING WHEAT')
+  harv1 <- within(harv1, alt_Commodity[commodity_desc == 'WHEAT' & class_desc == 'SPRING, DURUM'] <- 'SPRING WHEAT - DURUM')
+  harv1 <- within(harv1, alt_Commodity[commodity_desc == 'COTTON' & class_desc == 'UPLAND'] <- 'UPLAND COTTON')
+  harv1 <- within(harv1, alt_Commodity[commodity_desc == 'COTTON' & class_desc == 'PIMA'] <- 'PIMA COTTON')
+  
+  return(harv1)
+}
+
+##function to put data into the database
+database <- function (data, db_connection_string, tablename) {
+  DBname <- dbConnect(odbc::odbc(), .connection_string = db_connection_string)
+  
+#Find Deltas (*Note: if old records revised, delta logic doesn't work and duplicates will exist)
+  if (dbExistsTable(DBname, tablename))
+  {
+    dbData <- dbReadTable(DBname, tablename)
+    cat("Number of rows in database before insert:", nrow(dbData), "\n")
+    data <- dplyr::setdiff(data, dbData)
+  }
+  
+  #put into database
+  harvready <- sqlData(DBname, data, row.names = FALSE)
+  cat("Number of rows to load into database:", nrow(harvready), "\n")
+  
+  dbWriteTable(DBname, tablename, harvready, append = TRUE)
+  
+  dbData <- dbReadTable(DBname, tablename)
+  cat("Number of rows in database after insert:", nrow(dbData), "\n")
+}
