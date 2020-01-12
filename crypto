@@ -1,0 +1,56 @@
+##predicting cryptocurrency prices using prophet and map: https://www.kaggle.com/philmohun/cryptocurrency-financial-data/data
+##link to dataset on kaggle; 
+
+library(purrr)
+library(tidyverse)
+library(prophet)
+library(lubridate)
+library(zoo)
+library(readr)
+library(rlang)
+library(dplyr)
+library(tidyr)
+crypto <- read_csv('consolidated_coin_data.csv')
+
+crypto$Date <- ymd(crypto$Date)
+#change date field to ds
+names(crypto)[2]<-"ds"
+#selects close price
+names(crypto)[6]<-"y"
+
+crypto <- crypto %>% mutate(year = lubridate::year(ds))
+
+##crypto <- crypto %>% filter(year>=2016)
+
+##filtering out coins without enough records
+cryptocoin <- crypto %>% group_by(Currency) %>% 
+  dplyr::count(Currency) %>% filter(n > 300)
+
+crypto_join <- crypto %>% semi_join(cryptocoin) 
+
+crypto_nest <- crypto_join %>% group_by(Currency) %>% nest()
+
+m_df <- crypto_nest %>% mutate(m = map(crypto_nest$data, prophet))
+
+future_df <- m_df %>% mutate(future = map(m_df$m, make_future_dataframe, periods = 365, freq ='day')) 
+
+##future_unnest <- future_df %>% unnest(future)
+
+##as.Date(future_unnest$ds)
+
+#future_pre <- future_unnest %>% mutate(weekday = !(weekdays(future_unnest$ds)) %in% c('Saturday','Sunday')) %>% 
+#filter(weekday == 'TRUE') %>% select(-weekday)
+
+currency <- future_df %>% group_by(Currency) %>% nest()
+
+future <- future_df %>% group_by(Currency) %>% nest() %>% select(data)
+
+#l <- map(crypto_nest$data, prophet)
+
+m <- m_df$m
+
+crypto_prophet <- future_df %>% mutate(forecast = map2(m, future, predict))
+
+crypto_forecast <- crypto_prophet %>% unnest(forecast) 
+
+
