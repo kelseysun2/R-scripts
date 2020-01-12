@@ -1,0 +1,70 @@
+##Grabs the total yield of several crops
+
+library(purrr)
+library(tidyr)
+library(lubridate)
+library(httr)
+library(jsonlite)
+library(DBI)
+library(dplyr)
+### NASS quickstats API Query examples
+# https://quickstats.nass.usda.gov/api
+# https://quickstats.nass.usda.gov/src/glossary.pdf
+
+
+### Load API & database credentials
+source(".//NASS/FunctionsNASSapi.R", encoding = 'UTF-8')
+load('/data/resources/resources')
+APIKey <- resources$NASS$APIKey
+db_connection_string <- resources$databases$adw$.connection_string
+rm('resources')
+
+### Session Variables -- fills database with current year
+data_year <- year(today())
+
+category <- "YIELD"
+
+##Must fill in data_items
+data_items <- c("CORN, GRAIN - YIELD, MEASURED IN BU / ACRE",
+                "CORN, GRAIN, IRRIGATED - YIELD, MEASURED IN BU / ACRE",
+                "CORN, GRAIN, NON-IRRIGATED - YIELD, MEASURED IN BU / ACRE", 
+                "CORN, SILAGE - YIELD, MEASURED IN TONS / ACRE",
+                "COTTON - YIELD, MEASURED IN LB / ACRE",
+                "COTTON, IRRIGATED - YIELD, MEASURED IN LB / ACRE",
+                "COTTON, NON-IRRIGATED - YIELD, MEASURED IN LB / ACRE", 
+                "COTTON, PIMA - YIELD, MEASURED IN LB / ACRE",
+                "COTTON, UPLAND - YIELD, MEASURED IN LB / ACRE",
+                "SOYBEANS - YIELD, MEASURED IN BU / ACRE",
+                "SOYBEANS, IRRIGATED - YIELD, MEASURED IN BU / ACRE",
+                "SOYBEANS, NON-IRRIGATED - YIELD, MEASURED IN BU / ACRE", 
+                "SORGHUM, GRAIN - YIELD, MEASURED IN BU / ACRE", 
+                "SORGHUM, GRAIN, IRRIGATED - YIELD, MEASURED IN BU / ACRE",
+                "SORGHUM, GRAIN, NON-IRRIGATED - YIELD, MEASURED IN BU / ACRE", 
+                "SORGHUM, SILAGE - YIELD, MEASURED IN BU / ACRE", "WHEAT, YIELD, MEASURED IN BU / ACRE",
+                "WHEAT, IRRIGATED - YIELD, MEASURED IN BU / ACRE",
+                "WHEAT, NON-IRRIGATED - YIELD, MEASURED IN BU / ACRE", 
+                "WHEAT, SPRING, (EXCL DURUM) - YIELD, MEASURED IN BU / ACRE",
+                "WHEAT, SPRING, DURUM - YIELD, MEASURED IN BU / ACRE",
+                "WHEAT, WINTER - YIELD, MEASURED IN BU / ACRE")
+
+##Uses function nass_data() from NASS_functions script
+d <- nass_data(data_year,
+               category,
+               data_items,
+               APIKey)
+
+
+yield_data <- d %>% select(County = county_name, State = state_name, Commodity = commodity_desc, Frequency = freq_desc, AgDistrict = asd_desc,
+                           Year = year, Unit = unit_desc, Yield = Value, GroupType = group_desc,
+                           UtilizationPractice = util_practice_desc, AcreType = prodn_practice_desc, alt_AcreType, alt_Commodity
+) 
+
+
+tablename <- "CropYield"
+
+##Uses function database() from NASS_functions script to build table in database
+database(yield_data, db_connection_string, tablename)
+
+#Cron tab to schedule in Jenkins
+#Released once a year on March 21st, not sure what time, probably 3:00 pm, did 4:00 pm to be safe
+#0-15 4 21 3 *
