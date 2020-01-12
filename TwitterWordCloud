@@ -1,0 +1,116 @@
+library(twitteR) 
+library(tidyverse)
+library(dplyr)
+library(tidytext)
+library(tm)
+library(qdap)
+library(purrr)
+library(tibble)
+library(xlsx)
+
+
+# Change consumer_key, consume_secret, access_token, and 
+# access_secret based on your own keys
+
+consumer_key <- ""
+consumer_secret <-""
+access_token <- ""
+access_secret <- "" 
+setup_twitter_oauth(consumer_key, consumer_secret, access_token, access_secret)
+
+
+ADM <- userTimeline('ADMupdates', n = 100)
+Cargill <- userTimeline('Cargill', n = 100)
+JD <- userTimeline('JohnDeere', n = 100)
+nutrien <- userTimeline('NutrienAgRetail', n = 100)
+syngenta <- userTimeline('SyngentaUS', n = 100)
+aurora <- userTimeline('AuroraAgNetwork', n = 100)
+
+ADM_df <- twListToDF(ADM) #convert to a dataframe
+Cargill_df <- twListToDF(Cargill) #convert to a dataframe
+JD_df <- twListToDF(JD) #convert to a dataframe
+Nutrien_df <- twListToDF(nutrien) #convert to a dataframe
+syngenta_df <- twListToDF(syngenta) #convert to a dataframe
+aurora_df <- twListToDF(aurora) #convert to a dataframe
+
+
+df1 <- do.call("rbind", list(ADM_df, Cargill_df, JD_df, Nutrien_df, syngenta_df, aurora_df))
+
+tweet_words <- df1 %>% select(text,id) %>% unnest_tokens(word,text)
+
+d <- tweet_words[!(grepl("[0-9]+",tweet_words$word)),]
+
+d$word <- tolower(d$word)
+
+## create a flag column for this
+##stop words are only ones used multiple times
+new_stops <- c('t.co', 'https', "'s", "'re", "'ll", "'ve", "amp", 
+               "thanksgiving", "will", "dm","recently", "like","", "around", 
+               "leadingthefield","w", "rosschastain", "hi", "prizes", "photo", 
+               "just", "high", "want", "contact", "get", "think", "way", "",  "nk", "e",
+               "rootedinag", "s", "last", "keep", "know", "week", "day",
+               "take", "can", "one", "enter", "chance", "use", "send", "part", "we're",
+               "we've", "p", "per", "nextleapforward", "it's", "it's", "leadingtheyieldsweepstakes",
+               "co's", "also", "that's", "sure", "much", "without", "week's",
+               "weekly", "booth", "co", "f", "still", "stop", "sweepstakes", "portfolio", 
+               "let", "check", "to", "come", "force", "don't", "don't", "put", "can't",
+               "can't", "what's", "what's", "get", "put",
+               stopwords('english'))
+flag <- c("yes")
+
+flagged <- cbind(data.frame(flag = flag, stringsAsFactors = FALSE), 
+                 data.frame(newstops = new_stops, stringsAsFactors = FALSE))
+flagged <- cbind(tibble::enframe(flag), 
+                 tibble::enframe(new_stops))
+
+flagged <- flagged[, -1] 
+flagged <- flagged[, -2]
+colnames(flagged) <- c("stopword", "word")
+
+
+joinid <- inner_join(d, df1, by = "id")
+
+joinstopword <- left_join(joinid, flagged, by = c("word" = "word")) 
+
+colnames(joinstopword)[2] <- c("oldword")
+
+
+joinstopword$word <- gsub("'", '', joinstopword$oldword)
+joinstopword$word <- gsub("'", '', joinstopword$word)
+
+
+joinstopword$word <- lemmatize_words(joinstopword$word)
+
+joinstopword <- within(joinstopword, word[word == 'nationalffa'] <- "ffa")
+joinstopword <- within(joinstopword, word[word == 'ag'] <- "agriculture")
+joinstopword <- within(joinstopword, word[word == 'tech'] <- "technology")
+
+countd <- joinstopword %>% group_by(word) %>% mutate(total = n())
+
+
+ordered <- countd[order(-countd$total), ]
+
+ordered <- ordered %>% ungroup()
+
+joinstopword <- ordered %>% mutate(url = map2_chr(ordered$screenName, ordered$id,
+                                                  ~paste0('twitter.com/',.x,'/status/',.y))
+)
+
+# sentiment analysis ------------------------------------------------------
+afinn <- get_sentiments("afinn")
+bing <- get_sentiments("bing")
+
+
+nonstop <- joinstopword %>%
+ filter(is.na(stopword) == TRUE) 
+
+afinnword <- nonstop %>%
+  inner_join(afinn) 
+
+bingword <- nonstop %>%
+  inner_join(bing) 
+
+
+write_csv(joinstopword, 'joinstopword.csv')
+write_csv(afinnword, 'afinnword.csv')
+write.xlsx(bingword, "bingword.xlsx")
