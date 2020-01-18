@@ -1,0 +1,216 @@
+library(odbc)
+library(readr)
+library(purrr)
+library(tidyverse)
+library(furrr)
+library(tidyr)
+library(dplyr)
+library(RODBC)
+
+
+# Connecting to the databases ---------------------------------------------
+
+
+#Function1: connect to databases --------------------------------------------
+
+connect <- function(database)
+{
+  load('/data/resources/resources')
+  
+  con1 <-
+    eval(parse(
+      text = paste0('resources$databases$', database, '$.connection_string')
+    ))
+  
+  dbname <- dbConnect(odbc::odbc(), .connection_string = con1)
+  rm('resources')
+  return(dbname)
+}
+
+
+# Function 2 --------------------------------------------------------------
+# Processing the views and procedures----------------------------------------------------
+
+
+process <- function(database, stringlist)
+{
+  views <- DBI::dbGetQuery(
+    database,
+    "DECLARE @schema_name AS VARCHAR(MAX)  = NULL;
+  DECLARE @view_name AS VARCHAR(MAX) = NULL;
+
+  SELECT
+  OBJECT_SCHEMA_NAME(v.object_id) schema_name,
+  v.name view_name
+  FROM
+  sys.views as v
+  WHERE
+  (@schema_name IS NULL OR
+  OBJECT_SCHEMA_NAME(v.object_id) LIKE '%' + @schema_name + '%') AND
+  (@view_name IS NULL OR
+  v.name LIKE '%' + @view_name + '%')"
+  )
+  
+views <-
+    views %>% mutate(name = paste0(views$schema_name, ".", views$view_name)) %>%
+    select(name)
+  
+  ##loops through each view
+  
+  viewsql <- views %>% mutate(sql = map_chr(
+    views$name,
+    ~ paste0(
+      "SELECT * FROM sys.dm_sql_referenced_entities('",
+      .x,
+      "','OBJECT')"
+    )
+  ))
+  
+  viewsql <- viewsql %>% group_by(name, sql) %>% nest()
+  
+  #row 13 took to long to run: "dbo.v_BarchartDev"
+  
+  viewsql <- viewsql[!(viewsql$name == "dbo.v_BarchartDev"),]
+  
+  viewsec <-
+    viewsql %>% mutate(fetch = suppressWarnings(future_map(
+      sql, possibly(~ dbGetQuery(database, .x), otherwise = NA_character_)
+    )))
+  
+  viewsec <- viewsec[!is.na(viewsec$fetch),]
+  
+  viewcombine <- viewsec %>% unnest(fetch) %>% select(-sql)
+  viewcombine$type <- c("view")
+  
+  # Stored Procedure dependencies -------------------------------------------
+  
+  procedures <- DBI::dbGetQuery(
+    database,
+    "SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME
+  FROM information_schema.routines
+  WHERE routine_type = 'PROCEDURE'
+  AND LEFT(SPECIFIC_NAME, 3) NOT IN ('sp_', 'xp_', 'ms_')"
+  )
+  
+  procedures <-
+    procedures %>% mutate(name = paste0(procedures$SPECIFIC_SCHEMA, ".", procedures$SPECIFIC_NAME)) %>%
+    select(name)
+  
+  ##loops through each view and grabs the number of records in it
+  
+  procsql <- procedures %>% mutate(sql = map_chr(
+    procedures$name,
+    ~ paste0(
+      "SELECT * FROM sys.dm_sql_referenced_entities('",
+      .x,
+      "','OBJECT')"
+    )
+  ))
+  
+  procsql <- procsql %>% group_by(name, sql) %>% nest()
+  
+  procsql <-
+    procsql %>% mutate(fetch = suppressWarnings(future_map(
+      sql, possibly(~ dbGetQuery(database, .x), otherwise = NA_character_)
+    )))
+  
+  procsql <- procsql[!is.na(procsql$fetch),]
+  
+  procsql <- procsql %>% unnest(fetch) %>% select(-sql)
+  
+  procsql$type <- c("procedure")
+  
+  # Combine both sections  ---------------------------------------------------
+  combined <- rbind(viewcombine, procsql)
+  
+  combined <- combined %>% mutate(referenced_database_name = tolower(referenced_database_name)) %>% 
+    mutate(referenced_schema_name = tolower(referenced_schema_name)) 
+    
+  combined <- combined %>% mutate(tablename = paste0(referenced_schema_name, ".", referenced_entity_name)) %>%
+    mutate(database = stringlist)
+  
+  return(combined)
+}
+
+
+# Function 3 --------------------------------------------------------------
+
+# datatype function -------------------------------------------------------
+add_datatypes <- function(database, includestr) {
+##add SQL datatypes -------------------------------------------------------
+databaselist <-
+  c('adwcon', 'acdwcon', 'grangercon', 'dwStagecon', 'tempdbcon', 'irelycon', 'msdbcon')
+objectlist <-
+  lapply(databaselist, get) # This creates a list of the objects.
+objectlist <-
+  setNames(objectlist, databaselist) # This names the elements of the list.
+
+
+datatype <- map(
+  objectlist,
+  ~ DBI::dbGetQuery(
+    .x,
+    "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE
+  FROM INFORMATION_SCHEMA.COLUMNS"
+  )
+)
+
+datatypesbind <-
+  do.call(
+    "rbind",
+    list(
+      datatype$adw,
+      datatype$acdw,
+      datatype$granger,
+      datatype$dwStage,
+      datatype$tempdb,
+      datatype$irely,
+      datatype$msdb
+    )
+  )
+
+datatypesbind <- datatypesbind %>% mutate(TABLE_CATALOG = tolower(TABLE_CATALOG)) %>% 
+  mutate(TABLE_SCHEMA = tolower(TABLE_SCHEMA))
+
+#each table must join to datatypes separately because of duplicates between tables
+
+#create table that is just table_catalog,table_schema, and table_name
+
+uniquetable <-
+  unique(datatypesbind[c("TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME")])
+
+# Adding referenced_database_name to acdw -----------------------------------
+uniquetable <- uniquetable %>% filter(TABLE_CATALOG %in% includestr)
+
+na <-
+database %>% filter(is.na(referenced_database_name == TRUE))
+
+#nonnadatabase <- data3combined %>% filter(is.na(data3combined$referenced_database_name) == FALSE)
+#above code doesn't work so I did a hacky solution
+nonna <-
+  database %>% mutate(na = is.na(referenced_database_name)) %>%
+  filter(na == FALSE) %>% select(-na)
+
+na <- left_join(
+  na,
+  uniquetable,
+  by = c(
+    "referenced_schema_name" = "TABLE_SCHEMA",
+    "referenced_entity_name" = "TABLE_NAME"
+  )
+) %>% select(-referenced_database_name)
+
+na <-
+  na %>% rename(referenced_database_name = TABLE_CATALOG)
+
+combined <- rbind(na, nonna)
+
+# joining to add in data types --------------------------------------------
+
+datatypes <- left_join(combined, datatypesbind,  by = c("referenced_schema_name" = "TABLE_SCHEMA", 
+                                                                   "referenced_entity_name" = "TABLE_NAME",
+                                                                   "referenced_minor_name" = "COLUMN_NAME",
+                                                                  "referenced_database_name" = "TABLE_CATALOG"))
+return(datatypes)
+}
+
