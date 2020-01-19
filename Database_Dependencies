@@ -1,0 +1,88 @@
+library(odbc)
+library(readr)
+library(purrr)
+library(tidyverse)
+library(furrr)
+library(tidyr)
+library(dplyr)
+library(RODBC)
+
+source('/data/resources/databases/dependendencyfunctions.R')
+
+# Connecting to the databases ---------------------------------------------
+
+#Function1: connect to databases --------------------------------------------
+list <-
+  c('database1',
+    'database2',
+    'database3',
+    'database4',
+    'database5',
+    'database6',
+    'database7')
+
+
+databases <- map(list, ~ connect(database = .x))
+
+database1con <- databases[[1]]
+database2con <- databases[[2]]
+database3con <- databases[[3]]
+database4con <- databases[[4]]
+database5con <- databases[[5]]
+database6con <- databases[[6]]
+database7con <- databases[[7]]
+
+
+# Function 2 --------------------------------------------------------------
+# Processing the views and procedures----------------------------------------------------
+
+stringlist <- c('database1',
+    'database2',
+    'database3')
+databaselist <- c('database1con', 'database2con', 'database3con')
+
+objectlist <-
+  lapply(databaselist, get) # This creates a list of the objects.
+objectlist <-
+  setNames(objectlist, databaselist) # This names the elements of the list.
+
+sqlprocess <-
+  map2(objectlist, stringlist,
+       ~ process(database = .x, stringlist = .y)
+  )
+
+database1 <- sqlprocess$database1con
+database2 <- sqlprocess$database2con
+database3 <- sqlprocess$database3con
+
+# Function 3 --------------------------------------------------------------
+
+# datatype function -------------------------------------------------------
+
+database1 <- add_datatypes(database = database1, includestr = 
+                        c('database1',
+    'database2',
+    'database3',
+    'database4'))
+database2 <- add_datatypes(database = database2, includestr =  
+                       c('database1',
+    'database2',
+    'database3',
+    'database4'))
+database3 <- add_datatypes(database = database3, includestr = c('database3'))
+
+
+# Combine the 3 databases -------------------------------------------------
+
+dataset <-
+  do.call("rbind", list(database1, database2, database3))
+
+dataset <-
+  dataset %>% rename('Field Name' = referenced_minor_name) %>%
+  rename('data_type' = DATA_TYPE)
+
+
+#write into database
+progready <- sqlData(database1, dataset, row.names = FALSE)
+
+dbWriteTable(database1, "Dependencies", progready, overwrite = TRUE)
