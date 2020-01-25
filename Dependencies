@@ -1,0 +1,53 @@
+library(odbc)
+library(readr)
+library(purrr)
+library(tidyverse)
+library(furrr)
+library(tidyr)
+library(dplyr)
+library(RODBC)
+
+source('~/R-scripts/Dependency_functions.R', chdir = T)
+
+
+main_database <- process(
+  data = c('main_database'), #the database you are specifying to grab metadata from
+  exclude = '[dbo].[v_Barchart]', #any views or procedures you want to exclude
+  dbjoin =  c(           #databases that the tables are from that you want to join to, to get datatypes
+    'main_database',
+    'database1',
+    "database2",
+    "database3",
+  )
+)
+
+database1 <- process(
+  database = c('database1'),
+  dbjoin =  c(
+   'database1',
+    "database2",
+    "database3",
+  )
+)
+
+database2 <- process(
+  database = c('database2'),
+  dbjoin =  c("database2")
+)
+
+
+
+# Combine the 3 databases -------------------------------------------------
+
+dataset <-
+  do.call("rbind", list(main_database, database1, database2))
+
+load('/data/resources/resources')
+db_connection_string <- resources$databases$main_database$.connection_string
+rm('resources')
+con <- dbConnect(odbc::odbc(), .connection_string = db_connection_string)
+
+#write into database
+progready <- sqlData(con, dataset, row.names = FALSE)
+
+dbWriteTable(con, "Dependencies", progready)
