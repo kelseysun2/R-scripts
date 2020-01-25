@@ -1,0 +1,181 @@
+#Database dependency function script
+#Gives the tables, columns, and datatypes beneath all of the views and stored procedures in a database
+
+library(odbc)
+library(readr)
+library(purrr)
+library(tidyverse)
+library(furrr)
+library(tidyr)
+library(dplyr)
+library(RODBC)
+
+# Internal function: Connecting to the databases ---------------------------------------------
+connect <- function(dblist)
+{
+  load('/data/resources/resources')
+  
+  con <- resources$databases[[dblist]]$.connection_string
+  
+  dbname <- dbConnect(odbc::odbc(), .connection_string = con)
+  rm('resources')
+  return(dbname)
+}
+
+
+
+# Internal function: looping through the views and procedures --------------------------------
+
+data_tbl <- function(data, exclude) {
+  #creating tablename
+  object <-
+    data %>% mutate(name = paste0(data$SPECIFIC_SCHEMA, ".", data$SPECIFIC_NAME)) %>%
+    select(name, database_name, type)
+  
+  ##creates statement to grab each view
+  
+  object <- object %>% mutate(sql = map_chr(
+    object$name,
+    ~ paste0(
+      "SELECT * FROM sys.dm_sql_referenced_entities('",
+      .x,
+      "','OBJECT')"
+    )
+  ))
+  
+  object <-
+    object %>% group_by(type, database_name, name, sql) %>% nest()
+  
+  ##object <- object[!(object$name == exclude), ]
+  
+  #loops through each view and grabs records
+  #if it errors then it converts that view to a NA
+  object <-
+    object %>% mutate(fetch = suppressWarnings(future_map(
+      sql, possibly( ~ dbGetQuery(dbcon, .x), otherwise = NA_character_)
+    )))
+  
+  #delete error rows
+  object <- object[!is.na(object$fetch), ]
+  
+  object <- object %>% unnest(fetch) %>% select(-sql)
+  
+  return(object)
+}
+
+
+# main function -----------------------------------------------------------
+
+process <- function(database, exclude, dbjoin) {
+  #function call
+
+  dbcon <- connect(dblist = database)
+
+  
+  views <- DBI::dbGetQuery(
+    dbcon,
+    "DECLARE @schema_name AS VARCHAR(MAX)  = NULL;
+  DECLARE @view_name AS VARCHAR(MAX) = NULL;
+  SELECT
+  'view' AS type,
+  LOWER(db_name()) AS database_name,
+  OBJECT_SCHEMA_NAME(v.object_id) SPECIFIC_SCHEMA,
+  v.name SPECIFIC_NAME
+  FROM
+  sys.views as v
+  WHERE
+  (@schema_name IS NULL OR
+  OBJECT_SCHEMA_NAME(v.object_id) LIKE '%' + @schema_name + '%') AND
+  (@view_name IS NULL OR
+  v.name LIKE '%' + @view_name + '%')"
+  )
+  
+  procedures <- DBI::dbGetQuery(
+    dbcon,
+    "SELECT 'procedure' AS type,
+    LOWER(db_name()) AS database_name,
+    SPECIFIC_SCHEMA, SPECIFIC_NAME
+  FROM information_schema.routines
+  WHERE routine_type = 'PROCEDURE'
+  AND LEFT(SPECIFIC_NAME, 3) NOT IN ('sp_', 'xp_', 'ms_')"
+  )
+  
+  tbl <- rbind(views, procedures)
+  
+  #function call
+  combined <- data_tbl(data = tbl, exclude)
+  
+  
+  #putting in lowercase to join later on
+  combined <-
+    combined %>% mutate(referenced_database_name = tolower(referenced_database_name)) %>%
+    mutate(referenced_schema_name = tolower(referenced_schema_name))
+  
+  combined <-
+    combined %>% mutate(tablename = paste0(referenced_schema_name, ".", referenced_entity_name))
+  
+  
+  ##add SQL datatypes -------------------------------------------------------
+  dbcon <- map(dbjoin, ~ connect(dblist = .x))
+  
+  #loops through includestr and grabs datatypes
+  datatype <- map_df(
+    dbcon,
+    ~ DBI::dbGetQuery(
+      .x,
+      "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE
+  FROM INFORMATION_SCHEMA.COLUMNS"
+    )
+  )
+  
+  datatype <-
+    datatype %>% mutate(TABLE_CATALOG = tolower(TABLE_CATALOG)) %>%
+    mutate(TABLE_SCHEMA = tolower(TABLE_SCHEMA))
+  
+  #each table must join to datatypes separately because of duplicates between tables
+  
+  #create table that is just table_catalog,table_schema, and table_name
+  
+  uniquetable <-
+    unique(datatype[c("TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME")])
+  
+  # Adding referenced_database_name to table -----------------------------------
+  na <-
+    combined %>% filter(is.na(referenced_database_name == TRUE))
+  
+  #nonnadatabase <- data3combined %>% filter(is.na(data3combined$referenced_database_name) == FALSE)
+  #above code doesn't work so I did a hacky solution
+  nonna <-
+    combined %>% mutate(na = is.na(referenced_database_name)) %>%
+    filter(na == FALSE) %>% select(-na)
+  
+  na <- left_join(
+    na,
+    uniquetable,
+    by = c(
+      "referenced_schema_name" = "TABLE_SCHEMA",
+      "referenced_entity_name" = "TABLE_NAME"
+    )
+  ) %>% select(-referenced_database_name)
+  
+  na <-
+    na %>% rename(referenced_database_name = TABLE_CATALOG)
+  
+  whole <- rbind(na, nonna)
+  
+  # joining to add in data types --------------------------------------------
+  
+  datatypes <-
+    left_join(
+      whole,
+      datatype,
+      by = c(
+        "referenced_schema_name" = "TABLE_SCHEMA",
+        "referenced_entity_name" = "TABLE_NAME",
+        "referenced_minor_name" = "COLUMN_NAME",
+        "referenced_database_name" = "TABLE_CATALOG"
+      )
+    )
+  return(datatypes)
+  
+}
