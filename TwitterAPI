@@ -1,0 +1,43 @@
+#Pulling from Twitter lists
+
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(qdap)
+library(purrr)
+library(xlsx)
+library(twitteR)
+library(rjson)
+library(httr)
+
+# Change consumer_key, consume_secret, access_token, and 
+# access_secret based on your own keys
+consumer_key <- ""
+consumer_secret <-""
+access_token <- ""
+access_secret <- "" 
+setup_twitter_oauth(consumer_key, consumer_secret, access_token, access_secret)
+
+
+twlist <- "Agriculture"
+twowner <- "ggerlock"
+api.url <- paste0("https://api.twitter.com/1.1/lists/members.json?slug=",
+                  twlist, "&owner_screen_name=", twowner, "&count=5000")
+response <- httr::GET(api.url, config(token=twitteR:::get_oauth_sig()))
+
+#Count = 5000 is the number of names per result page,
+#        which for this case simplifies things to one page.
+# This returns a JSON response which we can read using fromJSON:
+response.list <- fromJSON(content(response, as = "text", encoding = "UTF-8"))
+
+# Now, we have a list where each element is the Twitter data of one Twitter-list member. To extract their names and user_names:
+users.names <- sapply(response.list$users, function(i) i$name)
+users.screennames <- sapply(response.list$users, function(i) i$screen_name)
+
+
+# Part 2: grabbing tweets ---------------------------------------------
+
+tweets <- map(users.screennames, function(x) userTimeline(x, n = 100))
+
+tweets_df <- map_df(tweets, function(x) twListToDF(x))
+
