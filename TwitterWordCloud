@@ -19,24 +19,14 @@ access_secret <- ""
 setup_twitter_oauth(consumer_key, consumer_secret, access_token, access_secret)
 
 
-ADM <- userTimeline('ADMupdates', n = 100)
-Cargill <- userTimeline('Cargill', n = 100)
-JD <- userTimeline('JohnDeere', n = 100)
-nutrien <- userTimeline('NutrienAgRetail', n = 100)
-syngenta <- userTimeline('SyngentaUS', n = 100)
-aurora <- userTimeline('AuroraAgNetwork', n = 100)
+ag_list <- c('ADMupdates', 'Cargill', 'JohnDeere', 'NutrienAgRetail', 'SyngentaUS', 'AuroraAgNetwork')
 
-ADM_df <- twListToDF(ADM) #convert to a dataframe
-Cargill_df <- twListToDF(Cargill) #convert to a dataframe
-JD_df <- twListToDF(JD) #convert to a dataframe
-Nutrien_df <- twListToDF(nutrien) #convert to a dataframe
-syngenta_df <- twListToDF(syngenta) #convert to a dataframe
-aurora_df <- twListToDF(aurora) #convert to a dataframe
+tweets <- map(ag_list, function(x) userTimeline(x, n = 100))
+
+tweets_df <- map_df(tweets, function(x) twListToDF(x))
 
 
-df1 <- do.call("rbind", list(ADM_df, Cargill_df, JD_df, Nutrien_df, syngenta_df, aurora_df))
-
-tweet_words <- df1 %>% select(text,id) %>% unnest_tokens(word,text)
+tweet_words <- tweets_df %>% select(text,id) %>% unnest_tokens(word,text)
 
 d <- tweet_words[!(grepl("[0-9]+",tweet_words$word)),]
 
