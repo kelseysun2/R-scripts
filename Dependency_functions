@@ -1,18 +1,13 @@
-#Database dependency function script
-#Gives the tables, columns, and datatypes beneath all of the views and stored procedures in a database
-
 library(odbc)
 library(readr)
 library(purrr)
 library(tidyverse)
-library(furrr)
 library(tidyr)
 library(dplyr)
 library(RODBC)
 
 # Internal function: Connecting to the databases ---------------------------------------------
-connect <- function(dblist)
-{
+connect <- function(dblist){
   load('/data/resources/resources')
   
   con <- resources$databases[[dblist]]$.connection_string
@@ -23,10 +18,9 @@ connect <- function(dblist)
 }
 
 
-
 # Internal function: looping through the views and procedures --------------------------------
 
-data_tbl <- function(data, exclude) {
+data_tbl <- function(data, exclude, con) {
   #creating tablename
   object <-
     data %>% mutate(name = paste0(data$SPECIFIC_SCHEMA, ".", data$SPECIFIC_NAME)) %>%
@@ -46,13 +40,13 @@ data_tbl <- function(data, exclude) {
   object <-
     object %>% group_by(type, database_name, name, sql) %>% nest()
   
-  ##object <- object[!(object$name == exclude), ]
+  object <- object[!(object$name == exclude), ]
   
   #loops through each view and grabs records
   #if it errors then it converts that view to a NA
   object <-
-    object %>% mutate(fetch = suppressWarnings(future_map(
-      sql, possibly( ~ dbGetQuery(dbcon, .x), otherwise = NA_character_)
+    object %>% mutate(fetch = suppressWarnings(map(
+      sql, possibly( ~ dbGetQuery(con, .x), otherwise = NA_character_)
     )))
   
   #delete error rows
@@ -66,16 +60,18 @@ data_tbl <- function(data, exclude) {
 
 # main function -----------------------------------------------------------
 
-process <- function(database, exclude, dbjoin) {
+process <- function(database, dbjoin, exclude) {
+  
+  
   #function call
-
-  dbcon <- connect(dblist = database)
+dbcon <- connect(dblist = database)
 
   
   views <- DBI::dbGetQuery(
     dbcon,
     "DECLARE @schema_name AS VARCHAR(MAX)  = NULL;
   DECLARE @view_name AS VARCHAR(MAX) = NULL;
+
   SELECT
   'view' AS type,
   LOWER(db_name()) AS database_name,
@@ -103,7 +99,7 @@ process <- function(database, exclude, dbjoin) {
   tbl <- rbind(views, procedures)
   
   #function call
-  combined <- data_tbl(data = tbl, exclude)
+  combined <- data_tbl(data = tbl, exclude, con = dbcon)
   
   
   #putting in lowercase to join later on
@@ -117,6 +113,7 @@ process <- function(database, exclude, dbjoin) {
   
   ##add SQL datatypes -------------------------------------------------------
   dbcon <- map(dbjoin, ~ connect(dblist = .x))
+  
   
   #loops through includestr and grabs datatypes
   datatype <- map_df(
