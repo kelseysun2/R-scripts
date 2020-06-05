@@ -1,0 +1,77 @@
+  
+library(twitteR) 
+library(tidyverse)
+library(httr)
+library(jsonlite)
+library(rtweet)
+library(knitr)
+
+
+#Authentication: https://developer.twitter.com/en/docs/basics/authentication/overview
+#The twitter metrics endpoint will be available for an unknown amount of time: https://developer.twitter.com/en/labs 
+
+# 1. Find OAuth settings for twitter:
+#    https://dev.twitter.com/docs/auth/oauth
+oauth_endpoints("twitter")
+
+# 2. Register an application at https://apps.twitter.com/
+#    Make sure to set callback url to "http://127.0.0.1:1410/"
+#
+#    Replace key and secret below
+
+#assign strings
+twitter_token  <- create_token(
+  app = Twitter$app,
+  consumer_key = witter$consumer_key,
+  consumer_secret = Twitter$consumer_secret,
+  access_token = Twitter$access_token,
+  access_secret = witter$access_secret
+)
+
+
+# 4. Use API
+
+#https://developer.twitter.com/en/docs/tweets/timelines/api-reference/get-statuses-user_timeline
+req <- GET(
+  "https://api.twitter.com/1.1/statuses/user_timeline.json?screen_name=kelseysunderman&count=200",
+  config(token = twitter_token),
+  add_headers(headers = c(
+    `accept-encoding` = 'gzip',
+    `authorization` = 'Bearer',
+    `content-type` = 'application/json'
+  )))
+
+a <- as.data.frame(jsonlite::fromJSON(content(req, as = 'text'), flatten = TRUE))
+# Change consumer_key, consume_secret, access_token, and 
+# access_secret based on your own keys
+options(scipen=999)
+b <- paste(a[1:25, ]$id, collapse = ',')
+
+# engagement statistics ----------------------------------------------------
+#https://developer.twitter.com/en/docs/labs/tweet-metrics/api-reference/get-tweets-metrics
+
+api_url = paste0( "https://api.twitter.com/labs/1/tweets/metrics/private?ids=",b)
+
+
+
+req3 <- GET(api_url, config(token = twitter_token),
+            add_headers(headers = c(
+              `accept-encoding` = 'gzip',
+              `authorization` = 'Bearer',
+              `content-type` = 'application/json'
+            ))
+)
+stop_for_status(req3)
+
+c <- httr::content(req3)
+
+d <- as.data.frame(jsonlite::fromJSON(content(req3, as = 'text'), flatten = TRUE))
+
+#lab endpoints: https://developer.twitter.com/en/account/labs
+
+
+# Join back to user timeline dataset for full tweet information -----------
+
+
+full_df <- left_join(Aurora_df, d, by = c("id" = "data.tweet_id")) %>% 
+  select(text, favoriteCount, created,data.tweet.retweet_count, data.tweet.impression_count)
