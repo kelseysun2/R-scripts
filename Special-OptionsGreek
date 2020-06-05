@@ -1,0 +1,116 @@
+library(derivmkts)
+library(dplyr)
+library(odbc)
+library(tidyr)
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(purrr)
+library(knitr)
+library(furrr)
+
+con <- dbConnect(odbc::odbc(), dsn = "database1")
+
+special <- DBI::dbGetQuery(
+  con,
+  'SELECT 
+  id
+  ,spec.[symbol]
+  ,[underlying_future]
+  ,[root]
+  ,[contract]
+  , futures.[close] AS FuturesPrice
+  ,[contractName]
+  ,[contractMonth]
+  ,[exchange]
+  ,[type]
+  ,spec.[strike]
+  ,[expirationDate]
+  ,[date]
+  ,[impliedVolatility]
+  ,spec.[open]
+  ,spec.[high]
+  ,spec.[low]
+  ,[last]
+  ,[change]
+  ,[percentChange]
+  ,[premium]
+  ,spec.[volume]
+  ,spec.[openInterest]
+  ,[flag]  
+  FROM [database1].[dbo].[barchartSpecialOptions] spec
+  LEFT JOIN 
+  --joining barchart data on itself to get the close with the max timestamp (FuturesPrice)
+  ( SELECT 
+  t1.symbol, 
+  t1.time, 
+  t1.tradingDay,
+  t2.[close]
+  FROM(
+  (SELECT symbol, MAX(timestamp) AS time, 
+  tradingDay FROM [database1].[dbo].[barchartHistory]  
+  GROUP BY tradingDay, symbol) t1
+  JOIN
+  (SELECT
+  [close], 
+  symbol, 
+  timestamp,
+  tradingDay
+  FROM [database1].[dbo].[barchartHistory]) t2
+  ON t1.symbol = t2.symbol
+  AND t1.time = t2.timestamp
+  AND t1.tradingDay = t2.tradingDay
+  )) AS futures
+  ON spec.underlying_future = futures.symbol
+  AND spec.date = futures.tradingDay
+  WHERE futures.[close] IS NOT NULL'
+)
+
+special$DaystoMaturity <-
+  as.double(difftime(
+    lubridate::ymd(special$expirationDate),
+    lubridate::ymd(special$date),
+    units = "days"
+  ))
+
+
+# Greeks ------------------------------------------------------------------
+
+
+greeksCalculate <- function(s, k, iv, type, dtm){
+  g <- bsopt(s = s, k = k, v = iv,
+             r = 0.05, tt = dtm, d = 0.0)
+  g <- g[type]
+  data.frame(t(data.frame(g)))
+}
+
+
+normal <- special %>% filter(strike > 0)
+
+##Using furrr package which is twice as fast as purrr
+future::plan(multiprocess)
+
+special_greek<- future_map_dfr( #drf: dataframe rows as output
+  transpose(normal), #map requires a list as input, transpose: df to list
+  ~greeksCalculate(s = .x$FuturesPrice, k = .x$strike, iv = .x$impliedVolatility, 
+                   type = .x$type, dtm = .x$DaystoMaturity)
+)
+
+Options <- cbind(normal, special_greek) 
+
+Options$greekPremium <- Options$Premium
+
+Options<- Options %>% select(-Premium) 
+Options$Elasticity <- as.numeric(Options$Elasticity)
+Options$Theta <- as.numeric(Options$Theta)
+
+##NaN is created when a value is divide by zero
+##Turning NaN into NA so it will go into SQL database
+Options <- within(Options, Elasticity[is.nan(Elasticity) == TRUE] <- NA)
+Options <- within(Options, Theta[is.nan(Theta) == TRUE] <- NA)
+
+is.num <- sapply(Options, is.numeric)
+Options[is.num] <- lapply(Options[is.num], round, 4)
+
+progready <- sqlData(con, Options, row.names = FALSE)
+dbWriteTable(con, "barchartSpecialOptionGreeks", progready, append = TRUE)
