@@ -1,0 +1,130 @@
+library(odbc)
+library(readr)
+suppressMessages(library(tidyverse))
+library(tidyr)
+library(dplyr)
+suppressMessages(library(lubridate))
+
+load('/data/resources/resources')
+
+con <- resources$databases$database1$.connection_string
+
+database1con <- dbConnect(odbc::odbc(), .connection_string = con)
+
+con <- resources$databases$database2$.connection_string
+
+acdwcon <- dbConnect(odbc::odbc(), .connection_string = con)
+rm('resources')
+
+
+#pulling old metadata records
+original <- DBI::dbGetQuery(
+  database1con, "SELECT * from dbo.metadata") 
+
+#I changed the column name in the original table
+old <- original %>% select(-table_creation_date)
+
+#pulling new metadata records
+database1 <- DBI::dbGetQuery(
+ database1con, "SELECT * from INFORMATION_SCHEMA.COLUMNS") 
+
+acdw <- DBI::dbGetQuery(
+  database2con, "SELECT * from INFORMATION_SCHEMA.COLUMNS") 
+
+new <- rbind(database1, database2) %>% select(-CHARACTER_SET_CATALOG, -CHARACTER_SET_SCHEMA, -COLLATION_CATALOG,
+                                   -COLLATION_SCHEMA, -DOMAIN_CATALOG, -DOMAIN_SCHEMA, -DOMAIN_NAME)
+
+
+#this gives us all of the new records in the databases 
+
+newrecords <- anti_join(new, old, by = c("TABLE_CATALOG" = "TABLE_CATALOG",
+                                         "TABLE_SCHEMA" = "TABLE_SCHEMA", 
+                                         "TABLE_NAME" = "TABLE_NAME",
+                                         "COLUMN_NAME" = "COLUMN_NAME" 
+)) %>% mutate(type = c('new'))
+
+
+newrecords$old_datatype = newrecords$DATA_TYPE
+
+
+
+#deleted records 
+#includes original created date
+deleted <- anti_join(old, new, by = c("TABLE_CATALOG" = "TABLE_CATALOG",
+                                      "TABLE_SCHEMA" = "TABLE_SCHEMA", 
+                                      "TABLE_NAME" = "TABLE_NAME",
+                                      "COLUMN_NAME" = "COLUMN_NAME"
+)) %>% mutate(type = c('deleted column')) 
+
+deleted$old_datatype = deleted$DATA_TYPE
+
+#records where only the datatype has changed
+#muat exclude newrecords first
+
+test <- anti_join(new, newrecords,  by = c("TABLE_CATALOG" = "TABLE_CATALOG",
+                                           "TABLE_SCHEMA" = "TABLE_SCHEMA", 
+                                           "TABLE_NAME" = "TABLE_NAME",
+                                           "COLUMN_NAME" = "COLUMN_NAME")) 
+
+datatype  <- anti_join(test, old, by = c("TABLE_CATALOG" = "TABLE_CATALOG",
+                                         "TABLE_SCHEMA" = "TABLE_SCHEMA", 
+                                         "TABLE_NAME" = "TABLE_NAME",
+                                         "COLUMN_NAME" = "COLUMN_NAME", 
+                                         "DATA_TYPE" = "DATA_TYPE"
+)) %>% mutate(type = c('datatype change'))
+
+
+#join the original datatype
+
+og_datatype  <- inner_join(old, datatype, by = c("TABLE_CATALOG" = "TABLE_CATALOG",
+                                                 "TABLE_SCHEMA" = "TABLE_SCHEMA", 
+                                                 "TABLE_NAME" = "TABLE_NAME",
+                                                 "COLUMN_NAME" = "COLUMN_NAME"
+)) 
+
+datatype <- datatype %>% mutate(old_datatype = og_datatype$DATA_TYPE.x)
+
+#antijoin new records and datatype and then add column
+
+dataset <- do.call("rbind", list(newrecords, deleted, datatype)) %>% 
+  mutate(creation_date = now(tzone = "America/Chicago")) %>% 
+  mutate(table_creation_date = original$table_creation_date[1])
+
+
+# Adding to database ------------------------------------------------------
+
+metadata_changes <- DBI::dbGetQuery(
+  database1con, "SELECT * from dbo.Metadata_changes") 
+
+
+new_metadata <- anti_join(
+  dataset,
+  metadata_changes,
+  by = c(
+    "TABLE_CATALOG",
+    "TABLE_SCHEMA",
+    "TABLE_NAME",
+    "COLUMN_NAME",
+    "ORDINAL_POSITION",
+    "COLUMN_DEFAULT",
+    "IS_NULLABLE",
+    "DATA_TYPE",
+    "CHARACTER_MAXIMUM_LENGTH",
+    "CHARACTER_OCTET_LENGTH",
+    "NUMERIC_PRECISION",
+    "NUMERIC_PRECISION_RADIX",
+    "NUMERIC_SCALE",
+    "DATETIME_PRECISION",
+    "CHARACTER_SET_NAME",
+    "COLLATION_NAME",
+    "type",
+    "old_datatype"
+  )
+)
+
+
+progready <- sqlData(database1con, new_metadata, row.names = FALSE)
+
+suppressWarnings(dbWriteTable(database1con, "Metadata_changes", progready, append = TRUE))
+
+
